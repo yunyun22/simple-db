@@ -13,3 +13,7 @@ Lab Submission
 
 Instructions for labs (including how to submit answers) are [here](https://github.com/MIT-DB-Class/course-info-2018)
 
+
+Maven
+-----
+Convert from ant to maven,but junit test has some problem
