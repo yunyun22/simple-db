@@ -3,10 +3,9 @@ package simpledb;
 import java.io.IOException;
 import java.util.ArrayList;
 import java.util.Iterator;
+import java.util.Objects;
 import java.util.Random;
 import java.util.concurrent.ConcurrentHashMap;
-import java.util.concurrent.locks.ReadWriteLock;
-import java.util.concurrent.locks.ReentrantReadWriteLock;
 
 /**
  * BufferPool manages the reading and writing of pages into memory from
@@ -37,7 +36,8 @@ public class BufferPool {
 
     private final ConcurrentHashMap<PageId, Page> pages;
 
-    private final ReadWriteLock readWriteLock;
+    private final LockManager lockManager = new LockManager();
+
 
     /**
      * Creates a BufferPool that caches up to numPages pages.
@@ -46,7 +46,6 @@ public class BufferPool {
      */
     public BufferPool(int numPages) {
         pages = new ConcurrentHashMap<>();
-        readWriteLock = new ReentrantReadWriteLock();
     }
 
     public static int getPageSize() {
@@ -80,8 +79,18 @@ public class BufferPool {
      */
     public Page getPage(TransactionId tid, PageId pid, Permissions perm)
             throws TransactionAbortedException, DbException {
+
+
+
+        if (Objects.equals(perm, Permissions.READ_ONLY)) {
+            lockManager.acquireReadLock(pid, tid);
+        }
+        if (Objects.equals(perm, Permissions.READ_WRITE)) {
+            lockManager.acquireWriteLock(pid, tid);
+        }
+
+
         // some code goes here
-        readWriteLock.readLock().lock();
         Page page = pages.get(pid);
         if (page == null) {
             if (this.pages.size() >= DEFAULT_PAGES) {
@@ -91,7 +100,6 @@ public class BufferPool {
             page = databaseFile.readPage(pid);
             this.pages.put(pid, page);
         }
-        readWriteLock.readLock().unlock();
         return page;
     }
 
@@ -105,8 +113,7 @@ public class BufferPool {
      * @param pid the ID of the page to unlock
      */
     public void releasePage(TransactionId tid, PageId pid) {
-        // some code goes here
-        // not necessary for lab1|lab2
+        lockManager.releasePage(tid, pid);
     }
 
     /**
@@ -115,17 +122,14 @@ public class BufferPool {
      * @param tid the ID of the transaction requesting the unlock
      */
     public void transactionComplete(TransactionId tid) throws IOException {
-        // some code goes here
-        // not necessary for lab1|lab2
+        transactionComplete(tid, true);
     }
 
     /**
      * Return true if the specified transaction has a lock on the specified page
      */
     public boolean holdsLock(TransactionId tid, PageId p) {
-        // some code goes here
-        // not necessary for lab1|lab2
-        return false;
+        return lockManager.holdsLock(tid, p);
     }
 
     /**
@@ -137,8 +141,7 @@ public class BufferPool {
      */
     public void transactionComplete(TransactionId tid, boolean commit)
             throws IOException {
-        // some code goes here
-        // not necessary for lab1|lab2
+        lockManager.release(tid);
     }
 
     /**
