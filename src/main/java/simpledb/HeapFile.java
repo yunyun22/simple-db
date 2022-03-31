@@ -113,7 +113,7 @@ public class HeapFile implements DbFile {
         HeapPage heapPage = null;
         for (int i = 0; i <= pages; i++) {
             PageId pageId = new HeapPageId(getId(), i);
-            Page page = Database.getBufferPool().getPage(tid, pageId, null);
+            Page page = Database.getBufferPool().getPage(tid, pageId, Permissions.READ_WRITE);
             heapPage = (HeapPage) page;
             if (heapPage.getNumEmptySlots() > 0) {
                 break;
@@ -132,7 +132,7 @@ public class HeapFile implements DbFile {
     // see DbFile.java for javadocs
     public ArrayList<Page> deleteTuple(TransactionId tid, Tuple t) throws DbException,
             TransactionAbortedException, IOException {
-        Page page = Database.getBufferPool().getPage(tid, t.getRecordId().getPageId(), null);
+        Page page = Database.getBufferPool().getPage(tid, t.getRecordId().getPageId(), Permissions.READ_WRITE);
         HeapPage heapPage = (HeapPage) page;
         heapPage.deleteTuple(t);
         writePage(heapPage);

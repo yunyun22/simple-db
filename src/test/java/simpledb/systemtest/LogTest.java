@@ -194,12 +194,14 @@ public class LogTest extends SimpleDbTestBase {
             throws IOException, DbException, TransactionAbortedException {
         setup();
         doInsert(hf1, 1, 2);
-
+        Transaction t1 = new Transaction();
         // *** Test:
         // insert, abort: data should not be there
         // flush pages directly to heap file to defeat NO-STEAL policy
 
         dontInsert(hf1, 4, -1);
+
+
 
         Transaction t = new Transaction();
         t.start();

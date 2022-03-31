@@ -1,11 +1,8 @@
 package simpledb;
 
 import java.io.IOException;
-import java.util.ArrayList;
-import java.util.Iterator;
-import java.util.Objects;
-import java.util.Random;
-import java.util.concurrent.ConcurrentHashMap;
+import java.util.*;
+import java.util.concurrent.TimeUnit;
 
 /**
  * BufferPool manages the reading and writing of pages into memory from
@@ -16,7 +13,7 @@ import java.util.concurrent.ConcurrentHashMap;
  * a page, BufferPool checks that the transaction has the appropriate
  * locks to read/write the page.
  *
- * @Threadsafe, all fields are final
+ * @Threadsafe all fields are final
  */
 public class BufferPool {
     /**
@@ -34,9 +31,11 @@ public class BufferPool {
     public static final int DEFAULT_PAGES = 16;
 
 
-    private final ConcurrentHashMap<PageId, Page> pages;
+    private final Map<PageId, Page> pages;
 
     private final LockManager lockManager = new LockManager();
+
+    private final int numPages;
 
 
     /**
@@ -45,7 +44,8 @@ public class BufferPool {
      * @param numPages maximum number of pages in this buffer pool.
      */
     public BufferPool(int numPages) {
-        pages = new ConcurrentHashMap<>();
+        this.numPages = numPages;
+        pages = new LinkedHashMap<>(16, 0.75f, true);
     }
 
     public static int getPageSize() {
@@ -80,27 +80,35 @@ public class BufferPool {
     public Page getPage(TransactionId tid, PageId pid, Permissions perm)
             throws TransactionAbortedException, DbException {
 
-
-
         if (Objects.equals(perm, Permissions.READ_ONLY)) {
-            lockManager.acquireReadLock(pid, tid);
+            try {
+                lockManager.acquireReadLock(pid, tid, TimeUnit.SECONDS.toNanos(10));
+            } catch (InterruptedException e) {
+                e.printStackTrace();
+                throw new TransactionAbortedException();
+            }
         }
         if (Objects.equals(perm, Permissions.READ_WRITE)) {
-            lockManager.acquireWriteLock(pid, tid);
-        }
-
-
-        // some code goes here
-        Page page = pages.get(pid);
-        if (page == null) {
-            if (this.pages.size() >= DEFAULT_PAGES) {
-                evictPage();
+            try {
+                lockManager.acquireWriteLock(pid, tid, TimeUnit.SECONDS.toNanos(10));
+            } catch (InterruptedException e) {
+                e.printStackTrace();
+                throw new TransactionAbortedException();
             }
-            DbFile databaseFile = Database.getCatalog().getDatabaseFile(pid.getTableId());
-            page = databaseFile.readPage(pid);
-            this.pages.put(pid, page);
         }
-        return page;
+        // some code goes here
+        synchronized (this) {
+            Page page = pages.get(pid);
+            if (page == null) {
+                if (this.pages.size() >= numPages) {
+                    evictPage();
+                }
+                DbFile databaseFile = Database.getCatalog().getDatabaseFile(pid.getTableId());
+                page = databaseFile.readPage(pid);
+                this.pages.put(pid, page);
+            }
+            return page;
+        }
     }
 
     /**
@@ -141,7 +149,25 @@ public class BufferPool {
      */
     public void transactionComplete(TransactionId tid, boolean commit)
             throws IOException {
+        if (commit) {
+            flushPages(tid);
+        } else {
+            restorePages(tid);
+        }
         lockManager.release(tid);
+    }
+
+
+    private void restorePages(TransactionId tid) {
+        Set<PageId> pageIds = lockManager.getPageId(tid);
+        for (PageId pageId : pageIds) {
+            synchronized (this) {
+                pages.remove(pageId);
+            }
+
+            //Page page = pages.get(pageId);
+            //page.markDirty(false, null);
+        }
     }
 
     /**
@@ -162,16 +188,17 @@ public class BufferPool {
     public void insertTuple(TransactionId tid, int tableId, Tuple t)
             throws DbException, TransactionAbortedException {
         DbFile databaseFile = Database.getCatalog().getDatabaseFile(tableId);
-        ArrayList<Page> pages;
         try {
-            pages = databaseFile.insertTuple(tid, t);
+            for (Page page : databaseFile.insertTuple(tid, t)) {
+                synchronized (this) {
+                    this.pages.put(page.getId(), page);
+                }
+                page.markDirty(true, tid);
+            }
         } catch (IOException e) {
             throw new DbException("");
         }
-        for (Page page : pages) {
-            this.pages.putIfAbsent(page.getId(), page);
-            page.markDirty(true, tid);
-        }
+
     }
 
     /**
@@ -190,16 +217,17 @@ public class BufferPool {
     public void deleteTuple(TransactionId tid, Tuple t)
             throws DbException, TransactionAbortedException {
         DbFile databaseFile = Database.getCatalog().getDatabaseFile(t.getRecordId().getPageId().getTableId());
-        ArrayList<Page> pages = null;
         try {
-            pages = databaseFile.deleteTuple(tid, t);
+            for (Page page : databaseFile.deleteTuple(tid, t)) {
+                synchronized (this) {
+                    this.pages.put(page.getId(), page);
+                }
+                page.markDirty(true, tid);
+            }
         } catch (IOException e) {
             throw new DbException("");
         }
-        for (Page page : pages) {
-            this.pages.putIfAbsent(page.getId(), page);
-            page.markDirty(true, tid);
-        }
+
     }
 
     /**
@@ -208,9 +236,10 @@ public class BufferPool {
      * break simpledb if running in NO STEAL mode.
      */
     public synchronized void flushAllPages() throws IOException {
-        // some code goes here
-        // not necessary for lab1
-
+        Set<PageId> set = new HashSet<>(pages.keySet());
+        for (PageId page : set) {
+            flushPage(page);
+        }
     }
 
     /**
@@ -223,8 +252,7 @@ public class BufferPool {
      * are removed from the cache so they can be reused safely
      */
     public synchronized void discardPage(PageId pid) {
-        // some code goes here
-        // not necessary for lab1
+        pages.remove(pid);
     }
 
     /**
@@ -234,9 +262,20 @@ public class BufferPool {
      */
     private synchronized void flushPage(PageId pid) throws IOException {
         Page page = pages.get(pid);
-        DbFile databaseFile = Database.getCatalog().getDatabaseFile(pid.getTableId());
-        databaseFile.writePage(page);
-        page.markDirty(false, null);
+        if (page != null) {
+            TransactionId dirty = page.isDirty();
+            if (dirty != null) {
+
+                Database.getLogFile().logWrite(dirty, page.getBeforeImage(), page);
+                Database.getLogFile().force();
+
+                DbFile databaseFile = Database.getCatalog().getDatabaseFile(pid.getTableId());
+                databaseFile.writePage(page);
+                page.markDirty(false, null);
+
+                page.setBeforeImage();
+            }
+        }
     }
 
     /**
@@ -246,7 +285,8 @@ public class BufferPool {
         if (tid == null) {
             return;
         }
-        for (Page page : pages.values()) {
+        List<Page> values = new ArrayList<>(pages.values());
+        for (Page page : values) {
             if (tid.equals(page.isDirty())) {
                 flushPage(page.getId());
             }
@@ -258,25 +298,15 @@ public class BufferPool {
      * Flushes the page to disk to ensure dirty pages are updated on disk.
      */
     private synchronized void evictPage() throws DbException {
-
-        Random random = new Random();
-        int i = random.nextInt(15);
-        Iterator<PageId> pageIdIterator = pages.keys().asIterator();
-        PageId pageId = null;
-        while (i > -1) {
-            pageId = pageIdIterator.next();
-            i--;
+        Iterator<PageId> iterator = pages.keySet().iterator();
+        while (iterator.hasNext()) {
+            PageId pageId = iterator.next();
+            Page page = pages.get(pageId);
+            if (page.isDirty() == null) {
+                iterator.remove();
+                return;
+            }
         }
-        if (pageId == null) {
-            throw new DbException("");
-        }
-        try {
-            flushPage(pageId);
-        } catch (IOException e) {
-            throw new DbException("");
-        }
-        pages.remove(pageId);
-
+        throw new DbException("");
     }
-
 }
