@@ -92,12 +92,12 @@ public class LogFile {
 
     final static int INT_SIZE = 4;
     final static int LONG_SIZE = 8;
+    //protected by this
+    long currentOffset = -1;
+    // for PatchTest //protected by this
+    int totalRecords = 0;
 
-    long currentOffset = -1;//protected by this
-    //    int pageSize;
-    int totalRecords = 0; // for PatchTest //protected by this
-
-    HashMap<Long, Long> tidToFirstLogRecord = new HashMap<Long, Long>();
+    HashMap<Long, Long> tidToFirstLogRecord = new HashMap<>();
 
     /**
      * Constructor.
@@ -160,16 +160,19 @@ public class LogFile {
 
             synchronized (this) {
                 preAppend();
-                //Debug.log("ABORT");
+                Debug.log("ABORT " + tid.getId());
                 //should we verify that this is a live transaction?
 
                 // must do this here, since rollback only works for
                 // live transactions (needs tidToFirstLogRecord)
                 rollback(tid);
 
+                Debug.log("ROLLBACK OFFSET = " + raf.getFilePointer());
+
                 raf.writeInt(ABORT_RECORD);
                 raf.writeLong(tid.getId());
                 raf.writeLong(currentOffset);
+                Debug.log("ABORT OFFSET = " + raf.getFilePointer());
                 currentOffset = raf.getFilePointer();
                 force();
                 tidToFirstLogRecord.remove(tid.getId());
@@ -191,6 +194,7 @@ public class LogFile {
         raf.writeInt(COMMIT_RECORD);
         raf.writeLong(tid.getId());
         raf.writeLong(currentOffset);
+        Debug.log("COMMIT OFFSET = " + raf.getFilePointer());
         currentOffset = raf.getFilePointer();
         force();
         tidToFirstLogRecord.remove(tid.getId());
@@ -313,7 +317,7 @@ public class LogFile {
      */
     public synchronized void logXactionBegin(TransactionId tid)
             throws IOException {
-        Debug.log("BEGIN");
+        Debug.log("BEGIN " + tid.getId());
         if (tidToFirstLogRecord.get(tid.getId()) != null) {
             System.err.printf("logXactionBegin: already began this tid\n");
             throw new IOException("double logXactionBegin()");
@@ -445,6 +449,9 @@ public class LogFile {
                     case BEGIN_RECORD:
                         tidToFirstLogRecord.put(record_tid, newStart);
                         break;
+                    case COMMIT_RECORD:
+                        tidToFirstLogRecord.remove(record_tid);
+                        break;
                 }
 
                 //all xactions finish with a pointer
@@ -504,6 +511,7 @@ public class LogFile {
                     }
                     current = lastOffset;
                 }
+                raf.seek(this.currentOffset);
             }
         }
     }
@@ -532,9 +540,99 @@ public class LogFile {
         synchronized (Database.getBufferPool()) {
             synchronized (this) {
                 recoveryUndecided = false;
-                // some code goes here
+                Map<Long, List<Page>> redo = new HashMap<>();
+                Map<Long, List<Page>> undo = new HashMap<>();
+                Set<Long> redoTid = new HashSet<>();
+                long recoverStartPointer = getRecoverStartPointer();
+                recoverStartPointer = recoverStartPointer < 1 ? 8 : recoverStartPointer;
+                long currentPointer = raf.length();
+
+                while (currentPointer > recoverStartPointer) {
+                    raf.seek(currentPointer - 8);
+                    long lastOffset = raf.readLong();
+                    raf.seek(lastOffset);
+                    int logType = raf.readInt();
+                    long logTid = raf.readLong();
+                    if (!RECORD_TYPES.contains(logType)) {
+                        throw new NoSuchElementException();
+                    }
+                    if (logType == COMMIT_RECORD || logType == ABORT_RECORD) {
+                        redoTid.add(logTid);
+                    }
+                    if (logType == UPDATE_RECORD) {
+                        Page before = readPageData(raf);
+                        Page after = readPageData(raf);
+                        if (redoTid.contains(logTid)) {
+                            List<Page> pages = redo.computeIfAbsent(logTid, k -> new ArrayList<>());
+                            pages.add(after);
+                        } else {
+                            List<Page> pages = undo.computeIfAbsent(logTid, k -> new ArrayList<>());
+                            pages.add(before);
+                        }
+                    }
+                    if (logType == BEGIN_RECORD) {
+                        if (!redoTid.contains(logTid)) {
+                            List<Page> pages = undo.get(logTid);
+                            if (pages != null && !pages.isEmpty()) {
+                                for (Page page : pages) {
+                                    DbFile databaseFile = Database.getCatalog().getDatabaseFile(page.getId().getTableId());
+                                    databaseFile.writePage(page);
+                                }
+                            }
+                            //防止内存溢出
+                        } else {
+                            //redo暂时不需要
+                        }
+                        undo.remove(logTid);
+                    }
+                    currentPointer = lastOffset;
+                }
+
+                if (!undo.isEmpty()) {
+                    for (Map.Entry<Long, List<Page>> entry : undo.entrySet()) {
+                        Long key = entry.getKey();
+                        if (!redoTid.contains(key)) {
+                            List<Page> pages = entry.getValue();
+                            for (Page page : pages) {
+                                DbFile databaseFile = Database.getCatalog().getDatabaseFile(page.getId().getTableId());
+                                databaseFile.writePage(page);
+                            }
+                        }
+                    }
+                }
+
+                raf.seek(raf.length());
+            }
+            // some code goes here
+        }
+    }
+
+
+    private long getRecoverStartPointer() throws IOException {
+        raf.seek(0);
+        long checkpointPosition = raf.readLong();
+        long minLogRecord = 0;
+        if (checkpointPosition != -1) {
+            raf.seek(checkpointPosition);
+
+            int type = raf.readInt();
+            if (type != CHECKPOINT_RECORD) {
+                throw new RuntimeException("Checkpoint pointer does not point to checkpoint record");
+            }
+            //读取tid
+            raf.readLong();
+            int checkSize = raf.readInt();
+
+            for (int i = 0; i < checkSize; i++) {
+                raf.readLong();
+                long firstLogRecord = raf.readLong();
+                if (firstLogRecord < minLogRecord) {
+                    minLogRecord = firstLogRecord;
+                }
             }
         }
+        return minLogRecord;
+
     }
 
     /**
