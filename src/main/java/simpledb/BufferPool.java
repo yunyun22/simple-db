@@ -158,15 +158,10 @@ public class BufferPool {
     }
 
 
-    private void restorePages(TransactionId tid) {
+    private synchronized void restorePages(TransactionId tid) {
         Set<PageId> pageIds = lockManager.getPageId(tid);
         for (PageId pageId : pageIds) {
-            synchronized (this) {
-                pages.remove(pageId);
-            }
-
-            //Page page = pages.get(pageId);
-            //page.markDirty(false, null);
+            pages.remove(pageId);
         }
     }
 
@@ -298,10 +293,10 @@ public class BufferPool {
      * Flushes the page to disk to ensure dirty pages are updated on disk.
      */
     private synchronized void evictPage() throws DbException {
-        Iterator<PageId> iterator = pages.keySet().iterator();
+        Iterator<Map.Entry<PageId, Page>> iterator = pages.entrySet().iterator();
         while (iterator.hasNext()) {
-            PageId pageId = iterator.next();
-            Page page = pages.get(pageId);
+            Map.Entry<PageId, Page> next = iterator.next();
+            Page page = next.getValue();
             if (page.isDirty() == null) {
                 iterator.remove();
                 return;

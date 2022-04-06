@@ -197,7 +197,6 @@ public class BTreeFileReadTest extends SimpleDbTestBase {
 		it.open();
 		assertFalse(it.hasNext());
 		it.close();
-
 	}
 
 	/**

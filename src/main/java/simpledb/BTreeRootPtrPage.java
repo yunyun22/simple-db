@@ -21,7 +21,6 @@ public class BTreeRootPtrPage implements Page {
 	private int root; 
 	private int rootCategory;
 	private int header;
-
 	private byte[] oldData;
 
 	/**
