@@ -288,17 +288,11 @@ public class BTreeFile implements DbFile {
         // the new entry.  getParentWithEmtpySlots() will be useful here.  Don't forget to update
         // the sibling pointers of all the affected leaf pages.  Return the page into which a
         // tuple with the given key field should be inserted.
-        if (page == null) {
-            throw new DbException("");
-        }
         int numTuples = page.getNumTuples();
-        if (numTuples < 1) {
-            return page;
-        }
-        byte[] emptyLeafData = BTreePage.createEmptyPageData();
-        BTreePageId newPageId = new BTreePageId(tableid, getEmptyPageNo(tid, dirtypages), BTreePageId.LEAF);
-        BTreeLeafPage newLeafPage = new BTreeLeafPage(newPageId, emptyLeafData, page.keyField);
 
+        BTreeLeafPage newLeafPage = (BTreeLeafPage) getEmptyPage(tid, dirtypages, BTreePageId.LEAF);
+
+        BTreePageId newPageId = newLeafPage.getId();
         BTreePageId rightSiblingId = page.getRightSiblingId();
         page.setRightSiblingId(newPageId);
 
@@ -306,6 +300,7 @@ public class BTreeFile implements DbFile {
             BTreeLeafPage rightPage = (BTreeLeafPage) getPage(tid, dirtypages, rightSiblingId, Permissions.READ_WRITE);
             rightPage.setLeftSiblingId(newPageId);
             newLeafPage.setRightSiblingId(rightPage.getId());
+            dirtypages.put(rightPage.getId(), rightPage);
         }
 
 
@@ -328,14 +323,15 @@ public class BTreeFile implements DbFile {
             }
             if (i >= leftSize) {
                 page.deleteTuple(next);
-                Database.getBufferPool().insertTuple(tid, tableid, next);
+                newLeafPage.insertTuple(next);
             }
             i++;
         }
 
-        BTreeLeafPage newPage = (BTreeLeafPage) getPage(tid, dirtypages, newPageId, Permissions.READ_WRITE);
-        dirtypages.put(newPage.pid, newPage);
-        return field.compare(Op.GREATER_THAN_OR_EQ, firstField) ? newPage : page;
+        dirtypages.put(newLeafPage.pid, newLeafPage);
+        dirtypages.put(parentId, parent);
+        dirtypages.put(page.pid, page);
+        return field.compare(Op.GREATER_THAN_OR_EQ, firstField) ? newLeafPage : page;
     }
 
     /**
@@ -372,49 +368,38 @@ public class BTreeFile implements DbFile {
         // will be useful here.  Return the page into which an entry with the given key field
         // should be inserted.
 
-        BTreePageId newPageId = new BTreePageId(tableid, getEmptyPageNo(tid, dirtypages), BTreePageId.INTERNAL);
+        BTreeInternalPage newInternalPage = (BTreeInternalPage) getEmptyPage(tid, dirtypages, BTreePageId.INTERNAL);
 
-        byte[] emptyPageData = BTreePage.createEmptyPageData();
-        BTreeInternalPage newPage = new BTreeInternalPage(newPageId, emptyPageData, page.keyField);
-        Iterator<BTreeEntry> iterator = page.iterator();
 
         int numEntries = page.getNumEntries();
         int leftSize = numEntries / 2;
-        int i = 1;
-        BTreeEntry deleteEntry = null;
-        BTreeEntry newFirstEntry = null;
-        BTreeEntry oldPageLastEntry = null;
+
+        Iterator<BTreeEntry> iterator = page.iterator();
+        for (int i = 0; i < leftSize; i++) {
+            iterator.next();
+        }
+
+        BTreeEntry upgrade = iterator.next();
+        page.deleteKeyAndLeftChild(upgrade);
+
+        upgrade.setLeftChild(page.getId());
+        upgrade.setRightChild(newInternalPage.getId());
+
+        BTreeInternalPage parent = getParentWithEmptySlots(tid, dirtypages, page.getParentId(), upgrade.getKey());
+        parent.insertEntry(upgrade);
+
         while (iterator.hasNext()) {
             BTreeEntry next = iterator.next();
-            if (i == leftSize) {
-                oldPageLastEntry = next;
-            }
-            if (i == leftSize + 2) {
-                newFirstEntry = next;
-            }
-            if (i == leftSize + 1) {
-                deleteEntry = next;
-                page.deleteKeyAndLeftChild(next);
-            }
-            if (i > leftSize + 1) {
-                page.deleteKeyAndLeftChild(next);
-                newPage.insertEntry(next);
-            }
-            i++;
+            page.deleteKeyAndLeftChild(next);
+            newInternalPage.insertEntry(next);
         }
-        if (deleteEntry == null || newFirstEntry == null || oldPageLastEntry == null) {
-            throw new DbException("");
-        }
-        oldPageLastEntry.setRightChild(deleteEntry.getLeftChild());
-        newFirstEntry.setLeftChild(deleteEntry.getRightChild());
-        deleteEntry.setLeftChild(page.getId());
-        deleteEntry.setRightChild(newPage.getId());
-        newPage.setParentId(page.getParentId());
-        dirtypages.put(newPageId, newPage);
-        BTreeInternalPage parent = getParentWithEmptySlots(tid, dirtypages, page.getParentId(), deleteEntry.getKey());
-        parent.insertEntry(deleteEntry);
 
-        return field.compare(Op.GREATER_THAN_OR_EQ, newFirstEntry.getKey()) ? newPage : page;
+        dirtypages.put(newInternalPage.getId(), newInternalPage);
+        dirtypages.put(page.getId(), page);
+        dirtypages.put(parent.getId(), parent);
+
+
+        return field.compare(Op.GREATER_THAN_OR_EQ, newInternalPage.getKey(page.keyField)) ? newInternalPage : page;
     }
 
     /**
