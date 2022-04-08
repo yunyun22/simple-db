@@ -15,7 +15,7 @@ package simpledb;
 public class Debug {
   private static final int DEBUG_LEVEL;
   static {
-      System.setProperty("simpledb.Debug","1");
+      //System.setProperty("simpledb.Debug","1");
       String debug = System.getProperty("simpledb.Debug");
       if (debug == null) {
           // No system property = disabled
