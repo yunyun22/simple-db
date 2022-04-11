@@ -687,23 +687,23 @@ public class BTreeFile implements DbFile {
         // that the tuples are evenly distributed. Be sure to update
         // the corresponding parent entry.
         Tuple steal;
-        Field parentKey;
-        if (isRightSibling) {
-            Iterator<Tuple> rightIterator = sibling.iterator();
-            Tuple rightFirst = rightIterator.next();
-            Tuple rightSecond = rightIterator.next();
-            steal = rightFirst;
-            parentKey = rightSecond.getField(parent.keyField);
-        } else {
-            Iterator<Tuple> leftIterator = sibling.reverseIterator();
-            Tuple leftFirst = leftIterator.next();
-            steal = leftFirst;
-            parentKey = leftFirst.getField(parent.keyField);
-        }
-        sibling.deleteTuple(steal);
-        page.insertTuple(steal);
-        entry.setKey(parentKey);
 
+
+        int pageCount = page.getNumTuples();
+        int totle = pageCount + sibling.getNumTuples();
+        int stealCount = isRightSibling ? totle / 2 - pageCount : (int) Math.ceil(totle / 2.0) - pageCount;
+        Iterator<Tuple> iterator = isRightSibling ? sibling.iterator() : sibling.reverseIterator();
+        int i = 0;
+        Tuple pre = null;
+        while (i < stealCount && iterator.hasNext()) {
+            steal = iterator.next();
+            sibling.deleteTuple(steal);
+            page.insertTuple(steal);
+            pre = steal;
+            i++;
+        }
+        Field parentKey = isRightSibling ? iterator.next().getField(parent.keyField) : pre.getField(parent.keyField);
+        entry.setKey(parentKey);
         parent.updateEntry(entry);
     }
 
@@ -882,23 +882,27 @@ public class BTreeFile implements DbFile {
 
         Iterator<Tuple> iterator = rightPage.iterator();
         while (iterator.hasNext()) {
-            leftPage.insertTuple(iterator.next());
+            Tuple next = iterator.next();
+            rightPage.deleteTuple(next);
+            leftPage.insertTuple(next);
         }
-        deleteParentEntry(tid, dirtypages, leftPage, parent, parentEntry);
-        leftPage.setRightSiblingId(rightPage.getRightSiblingId());
-        BTreePageId rightSiblingId = rightPage.getRightSiblingId();
-        BTreeLeafPage page = (BTreeLeafPage) getPage(tid, dirtypages, rightSiblingId, Permissions.READ_WRITE);
-        page.setLeftSiblingId(leftPage.getId());
         Iterator<BTreeEntry> parentIterator = parent.iterator();
         BTreeEntry treeEntry = null;
         while (parentIterator.hasNext()) {
             treeEntry = parentIterator.next();
-            if (Objects.equals(treeEntry.getRightChild(), page.getId())) {
+            if (Objects.equals(treeEntry.getLeftChild(), rightPage.getId())) {
                 break;
             }
         }
         if (treeEntry == null) {
             throw new DbException("");
+        }
+        deleteParentEntry(tid, dirtypages, leftPage, parent, parentEntry);
+        leftPage.setRightSiblingId(rightPage.getRightSiblingId());
+        BTreePageId rightSiblingId = rightPage.getRightSiblingId();
+        if (rightSiblingId != null) {
+            BTreeLeafPage page = (BTreeLeafPage) getPage(tid, dirtypages, rightSiblingId, Permissions.READ_WRITE);
+            page.setLeftSiblingId(leftPage.getId());
         }
         treeEntry.setLeftChild(leftPage.getId());
         setEmptyPage(tid, dirtypages, rightPage.getId().getPageNumber());
