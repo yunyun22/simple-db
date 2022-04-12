@@ -787,6 +787,7 @@ public class BTreeFile implements DbFile {
         BTreeEntry first = page.iterator().next();
 
         int i = 0;
+        BTreeEntry lastEntry = null;
         while (i < stealCount && leftIterator.hasNext()) {
             BTreeEntry leftEntry = leftIterator.next();
             if (i == 0) {
@@ -794,6 +795,7 @@ public class BTreeFile implements DbFile {
                 page.insertEntry(bTreeEntry);
                 i++;
                 if (stealCount == 1) {
+                    lastEntry = leftEntry;
                     break;
                 }
             }
@@ -802,7 +804,7 @@ public class BTreeFile implements DbFile {
             i++;
         }
 
-        BTreeEntry last = leftIterator.next();
+        BTreeEntry last = stealCount == 1 ? lastEntry : leftIterator.next();
         if (last == null) {
             throw new DbException("");
         }
@@ -835,7 +837,7 @@ public class BTreeFile implements DbFile {
      * @throws TransactionAbortedException
      * @see #updateParentPointers(TransactionId, HashMap, BTreeInternalPage)
      */
-    protected void  stealFromRightInternalPage(TransactionId tid, HashMap<PageId, Page> dirtypages,
+    protected void stealFromRightInternalPage(TransactionId tid, HashMap<PageId, Page> dirtypages,
                                               BTreeInternalPage page, BTreeInternalPage rightSibling, BTreeInternalPage parent,
                                               BTreeEntry parentEntry) throws DbException, IOException, TransactionAbortedException {
         // some code goes here
@@ -852,6 +854,7 @@ public class BTreeFile implements DbFile {
         Iterator<BTreeEntry> rightIterator = rightSibling.iterator();
 
         int i = 0;
+        BTreeEntry firstEntry = null;
         while (i < stealCount && rightIterator.hasNext()) {
             BTreeEntry next = rightIterator.next();
             if (i == 0) {
@@ -859,6 +862,7 @@ public class BTreeFile implements DbFile {
                 page.insertEntry(bTreeEntry);
                 i++;
                 if (stealCount == 1) {
+                    firstEntry = next;
                     break;
                 }
             }
@@ -868,7 +872,7 @@ public class BTreeFile implements DbFile {
         }
 
 
-        BTreeEntry rightEntry = rightIterator.next();
+        BTreeEntry rightEntry = stealCount == 1 ? firstEntry : rightIterator.next();
         if (rightEntry == null) {
             throw new DbException("");
         }
